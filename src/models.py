@@ -1,11 +1,20 @@
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Optional, Dict, Any, List
 
 @dataclass
 class ClickUpTask:
-    internal_id: str  # Your system's ID (e.g., "order_101")
+    internal_id: str
     title: str
     description: str = ""
-    #assignees: List[int] = field(default_factory=list) # ClickUp User IDs
-    #priority: Optional[int] = None # 1: Urgent, 2: High, 3: Normal, 4: Low
     status: Optional[str] = None
+    priority: Optional[int] = None
+    tags: List[str] = field(default_factory=list)
+    
+    # Routing and Assignment
+    category: str = "general"          # e.g., "security", "dev", "infra"
+    target_list_id: Optional[str] = None # Overrides default list if provided
+    
+    assignees: List[int] = field(default_factory=list) 
+    checklists: List[str] = field(default_factory=list) 
+    due_date: Optional[int] = None
+    custom_fields: Dict[str, Any] = field(default_factory=dict)

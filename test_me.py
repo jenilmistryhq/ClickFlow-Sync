@@ -1,18 +1,21 @@
-from src.engine import ClickSyncEngine
+from src.engine import ClickFlowEngine
 from src.models import ClickUpTask
 
-def run():
-    engine = ClickSyncEngine()
+def run_test():
+    engine = ClickFlowEngine()
 
-    # Minimal task data
-    task_data = ClickUpTask(
-        internal_id="simple_test_001",
-        title="Testing Simple Task",
-        description="No assignment, just checking connection."
+    # This task will use the 'general' category, 
+    # which we mapped to the multiple IDs in your .env
+    test_task = ClickUpTask(
+        internal_id="MULTI-ASSIGN-01",
+        category="general", 
+        title="Testing Multiple Assignees",
+        description="This task should have two people assigned automatically.",
+        priority=3
     )
 
-    print("--- Starting Sync ---")
-    engine.upsert_task(task_data)
+    print("--- 🚀 Testing Multi-Assignee Logic ---")
+    engine.upsert_task(test_task)
 
 if __name__ == "__main__":
-    run()
+    run_test()
