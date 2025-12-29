@@ -5,3 +5,4 @@ sync_state.json
 dist/
 build/
 *.egg-info
+app.py

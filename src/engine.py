@@ -1,82 +1,91 @@
 import os
-import json
-import logging
 import requests
-from datetime import datetime
-from dotenv import load_dotenv
-from .models import ClickUpTask
-
-logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
-logger = logging.getLogger("ClickFlow")
+import datetime
+import json
+from .state_provider import JSONStateProvider
 
 class ClickFlowEngine:
-    def __init__(self, team_map: dict = None, default_list_id: str = None):
-        load_dotenv()
-        self.api_key = str(os.getenv("CLICKUP_API_KEY")).strip()
-        self.state_file = "sync_state.json"
+    def __init__(self, state_provider=None):
+        self.api_key = os.getenv("CLICKUP_API_KEY")
+        self.team_id = os.getenv("CLICKUP_TEAM_ID")
+        self.list_id = os.getenv("CLICKUP_LIST_ID")
+        
+        # Defensive check for API Key
+        if not self.api_key:
+            raise ValueError("CLICKUP_API_KEY not found in environment variables")
+            
+        self.headers = {
+            "Authorization": self.api_key, 
+            "Content-Type": "application/json"
+        }
         self.base_url = "https://api.clickup.com/api/v2"
-        self.headers = {"Authorization": self.api_key, "Content-Type": "application/json"}
-        
-        self.default_list_id = default_list_id or os.getenv("CLICKUP_LIST_ID")
-        
-        raw_ids = os.getenv("CLICKUP_DEFAULT_ASSIGNEE", "")
-        env_assignees = [int(i.strip()) for i in raw_ids.split(",") if i.strip()]
-        self.team_map = team_map or {"general": env_assignees}
-        self.state = self._load_state()
+        self.state = state_provider or JSONStateProvider()
+        self.members = self._fetch_members()
 
-    def _load_state(self):
-        if os.path.exists(self.state_file):
-            with open(self.state_file, "r") as f: return json.load(f)
+    def _fetch_members(self):
+        try:
+            res = requests.get(f"{self.base_url}/team/{self.team_id}", headers=self.headers)
+            if res.status_code == 200:
+                return {m['user']['email'].lower().strip(): m['user'] for m in res.json()['team']['members']}
+        except Exception as e:
+            print(f"⚠️ Member fetch failed: {e}")
         return {}
 
-    def _save_state(self):
-        with open(self.state_file, "w") as f: json.dump(self.state, f, indent=4)
-
-    def upsert_task(self, task: ClickUpTask, callback=None):
-        internal_key = str(task.internal_id)
-        clickup_id = self.state.get(internal_key)
-        dest_list = task.target_list_id or self.default_list_id
-        assignees = task.assignees or self.team_map.get(task.category, self.team_map.get("general", []))
+    def upsert_task(self, task, callback=None):
+        clickup_id = self.state.get(task.internal_id)
+        
+        # Get assignee IDs
+        assignee_ids = []
+        for email in task.assignee_emails:
+            member = self.members.get(email.lower().strip())
+            if member:
+                assignee_ids.append(int(member['id']))
 
         payload = {
             "name": task.title,
             "description": task.description,
-            "assignees": assignees,
+            "status": task.status.lower(),
             "priority": task.priority,
+            "assignees": assignee_ids,
             "tags": task.tags
         }
 
-        try:
-            # 1. ATTEMPT UPDATE IF ID EXISTS
-            if clickup_id:
-                url = f"{self.base_url}/task/{clickup_id}"
-                response = requests.put(url, headers=self.headers, json=payload)
-                
-                # FIX: If ClickUp says Task is deleted (ITEM_013), clear state and go to CREATE
-                if response.status_code == 404:
-                    logger.warning(f"⚠️ Task {clickup_id} was deleted in ClickUp. Re-creating...")
-                    del self.state[internal_key]
-                    clickup_id = None 
-                else:
-                    action = "UPDATED"
+        if clickup_id:
+            url = f"{self.base_url}/task/{clickup_id}"
+            res = requests.put(url, headers=self.headers, json=payload)
+            if res.status_code == 404:
+                print("⚠️ Ghost task found. Re-creating...")
+                self.state.set(task.internal_id, None)
+                return self.upsert_task(task, callback)
+        else:
+            url = f"{self.base_url}/list/{self.list_id}/task"
+            res = requests.post(url, headers=self.headers, json=payload)
 
-            # 2. ATTEMPT CREATE IF NO ID (OR IF PREVIOUS UPDATE FAILED)
-            if not clickup_id:
-                url = f"{self.base_url}/list/{dest_list}/task"
-                response = requests.post(url, headers=self.headers, json=payload)
-                action = "CREATED"
-            
-            if response.status_code == 200:
-                data = response.json()
-                res_id = data.get('id', clickup_id)
-                self.state[internal_key] = res_id
-                self._save_state()
+        # Handle Status Errors
+        if res.status_code == 400 and "Status not found" in res.text:
+            payload.pop("status")
+            res = requests.post(url, headers=self.headers, json=payload)
 
-                if callback:
-                    callback(task, res_id, action)
-                return res_id
+        if res.status_code in [200, 201]:
+            data = res.json()
+            new_id = data['id']
+            self.state.set(task.internal_id, new_id) # This creates the JSON file
             
-            logger.error(f"❌ API Error: {response.text}")
-        except Exception as e:
-            logger.error(f"❌ System Error: {str(e)}")
+            if task.attachment_paths:
+                self._upload_files(new_id, task.attachment_paths)
+            if callback:
+                callback(task, new_id, "SYNCED", self.members, assignee_ids)
+            return new_id
+        
+        print(f"❌ ClickUp Error: {res.text}")
         return None
+
+    def _upload_files(self, clickup_id, paths):
+        url = f"{self.base_url}/task/{clickup_id}/attachment"
+        # No Content-Type for file uploads
+        headers = {"Authorization": self.api_key}
+        for path in paths:
+            if os.path.exists(path):
+                with open(path, 'rb') as f:
+                    files = {'attachment': (os.path.basename(path), f)}
+                    requests.post(url, headers=headers, files=files)
