@@ -9,7 +9,7 @@ description = "Professional ClickUp task automation with state sync."
 readme = "README.md"
 authors = [{name = "Jenil Mistry"}]
 dependencies = [
-    "flask"
+    "flask",
     "requests",
     "python-dotenv"
 ]
