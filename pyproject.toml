@@ -1,6 +1,6 @@
 [project]
 name = "ClickFlow-Sync"
-version = "1.3.2"
+version = "1.3.3"
 description = "Professional ClickUp task automation with state sync."
 readme = "README.md"
 authors = [{name = "Jenil Mistry"}]
